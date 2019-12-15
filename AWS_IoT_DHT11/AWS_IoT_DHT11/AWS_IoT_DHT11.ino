@@ -38,28 +38,28 @@ DHT dht(DHTPIN, DHTTYPE);
 Servo myservo;
 #define motor1Pin1 3
 #define motor1Pin2 4     //3,4번에 워터모터연결
-#define soilPin A1
-#define sunlightPin A3
-#define servoPin 5
+#define soilPin A1       //A1에 토양수분센서 연결
+#define sunlightPin A3   //A3에 조도센서 연결
+#define servoPin 5       //5번에 servo모터 연결
 
 #include <ArduinoJson.h>
 
 /////// Enter your sensitive data in arduino_secrets.h
 const char ssid[]        = SECRET_SSID;
-const char pass[]        = SECRET_PASS;
-const char broker[]      = SECRET_BROKER;
-const char* certificate  = SECRET_CERTIFICATE;
+const char pass[]        = SECRET_PASS;  
+const char broker[]      = SECRET_BROKER;   
+const char* certificate  = SECRET_CERTIFICATE;   // arduino_secrets.h 에 값 들어있음
 
 WiFiClient    wifiClient;            // Used for the TCP socket connection
 BearSSLClient sslClient(wifiClient); // Used for SSL/TLS connection, integrates with ECC508
 MqttClient    mqttClient(sslClient);
 
 unsigned long lastMillis = 0;
-char water_val[10] = "OFF"; // 워터모터 ON,OFF 넣는 변수
+char water_val[10] = "OFF";   // 워터모터 ON,OFF 넣는 변수
 char servo_val[10] = "CLOSE"; // 서보모터 OPEN,HALFOPEN,CLOSE 넣는 변수
-float water_stand = 30.0f;  // 워터모터 기준값 변수
+float water_stand = 30.0f;    // 워터모터 제어의 기준값(토양수분정도)
 
-bool watermotor = false;
+bool watermotor = false;      //워터모터 ON 이면 true OFF 면 false
 int sunvisor = 0;
 
 
@@ -101,9 +101,8 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
   }
-
+      // MQTT client 에 연결상태 확인
   if (!mqttClient.connected()) {
-    // MQTT client is disconnected, connect
     connectMQTT();
   }
   
@@ -114,17 +113,17 @@ void loop() {
   soilmoisture = map(soilmoisture,0,1023,100,0);
   soilmoisture = constrain(soilmoisture,0,100); // 값을 0부터 100사이의 값으로
   
-   //워터 모터가 ON 이면서 수분값이 30 이상이면 작동을 멈춤
+   //토양수분값이 30 이상이면 작동을 멈춤
   if (soilmoisture >= water_stand ) {
       watermotor = false;
   }
-  //워터 모터가 ON 이면서 수분값이 30 미만이면 작동을 계속함
+  //토양수분값이 30 미만이면 작동을 계속함
   else if (soilmoisture < water_stand ) {
       watermotor = true;
   }
   pump(watermotor);
 
-  // publish a message roughly every 10 seconds.
+  // 10초마다 값을 갱신하고 전송
   if (millis() - lastMillis > 10000) {
     lastMillis = millis();
     char payload[512];
@@ -143,13 +142,13 @@ void connectWiFi() {
   Serial.print(ssid);
   Serial.print(" ");
 
+  // 연결실패시
   while (WiFi.begin(ssid, pass) != WL_CONNECTED) {
-    // failed, retry
     Serial.print(".");
     delay(5000);
   }
   Serial.println();
-
+  // 연결성공시
   Serial.println("You're connected to the network");
   Serial.println();
 }
@@ -227,6 +226,7 @@ void onMessageReceived(int messageSize) {
   const char* servo_delta = state["sunvisor"];
 
   char payload[512];
+  // sunvisor 값을 조건에 따라 갱신하는 메세지
     if (strcmp(servo_delta,"OPEN")==0) {
       strcpy(servo_val, "OPEN");
       sprintf(payload,"{\"state\":{\"reported\":{\"sunvisor\":\"%s\"}}}",servo_val);      
@@ -247,28 +247,28 @@ void onMessageReceived(int messageSize) {
   }
 }
 
-void pump(bool flag)  // 펌프 돌아가는 함수
+void pump(bool flag)  // 워터펌프 돌아가는 함수
 {
   if(flag){
     digitalWrite(motor1Pin1, HIGH);
-    digitalWrite(motor1Pin2, LOW);
+    digitalWrite(motor1Pin2, LOW);  // pin1 pin2 값이 다르면 워터펌프가 동작함
     strcpy(water_val, "ON");
   }
   else{
     digitalWrite(motor1Pin1, LOW);
-    digitalWrite(motor1Pin2, LOW);
+    digitalWrite(motor1Pin2, LOW);  // pin1 pin2 값이 같으면 워터펌프가 정지함
     strcpy(water_val, "OFF");
   }
 }
 
-void servo(int state){
+void servo(int state){  // servo 모터 제어 함수
   if(state == 0){
-    myservo.write(0);
+    myservo.write(0);   // CLOSE
   }
   else if(state == 1){
-    myservo.write(90);
+    myservo.write(90);  // HALFOPEN
   }
   else if(state == 2){
-    myservo.write(180);
+    myservo.write(180); // OPEN 
   }
 }

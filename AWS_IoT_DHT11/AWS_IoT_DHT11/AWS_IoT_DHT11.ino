@@ -36,11 +36,13 @@
 DHT dht(DHTPIN, DHTTYPE);
 
 Servo myservo;
-int motor1pin1=6;
-int motor1pin2=7;      //3,4번에 워터모터연결
-  
-#include <ArduinoJson.h>
+#define motor1Pin1 3
+#define motor1Pin2 4     //3,4번에 워터모터연결
+#define soilPin A1
+#define sunlightPin A3
+#define servoPin 5
 
+#include <ArduinoJson.h>
 
 /////// Enter your sensitive data in arduino_secrets.h
 const char ssid[]        = SECRET_SSID;
@@ -53,22 +55,17 @@ BearSSLClient sslClient(wifiClient); // Used for SSL/TLS connection, integrates 
 MqttClient    mqttClient(sslClient);
 
 unsigned long lastMillis = 0;
-char* water_val = "OFF"; // 워터모터 ON,OFF 넣는 변수
-char* servo_val = "OFF"; // 서보모터 OPEN,HALFOPEN,CLOSE 넣는 변수
-int water_stand = 30;  // 워터모터 기준값 변수
+char water_val[10] = "OFF"; // 워터모터 ON,OFF 넣는 변수
+char servo_val[10] = "CLOSE"; // 서보모터 OPEN,HALFOPEN,CLOSE 넣는 변수
+float water_stand = 30.0f;  // 워터모터 기준값 변수
+
+bool watermotor = false;
+int sunvisor = 0;
 
 
 void setup() {
   Serial.begin(115200);
   while (!Serial);
-
-  myservo.attach(5);       //서보모터 5번
-
-  float sunlight = analogRead(A3);     // 조도센서 연결 
-  float soilmoisture = analogRead(A1); // 토양수분센서 연결
-
-
-  dht.begin();
 
   if (!ECCX08.begin()) {
     Serial.println("No ECCX08 present!");
@@ -93,6 +90,11 @@ void setup() {
   // Set the message callback, this function is
   // called when the MQTTClient receives a message
   mqttClient.onMessage(onMessageReceived);
+
+  pinMode(motor1Pin1, OUTPUT);
+  pinMode(motor1Pin2, OUTPUT);
+  myservo.attach(servoPin);
+  dht.begin();
 }
 
 void loop() {
@@ -104,9 +106,23 @@ void loop() {
     // MQTT client is disconnected, connect
     connectMQTT();
   }
-
+  
   // poll for new MQTT messages and send keep alives
   mqttClient.poll();
+  
+  float soilmoisture = analogRead(soilPin);  // 습도센서 1번 연결
+  soilmoisture = map(soilmoisture,0,1023,100,0);
+  soilmoisture = constrain(soilmoisture,0,100); // 값을 0부터 100사이의 값으로
+  
+   //워터 모터가 ON 이면서 수분값이 30 이상이면 작동을 멈춤
+  if (soilmoisture >= water_stand ) {
+      watermotor = false;
+  }
+  //워터 모터가 ON 이면서 수분값이 30 미만이면 작동을 계속함
+  else if (soilmoisture < water_stand ) {
+      watermotor = true;
+  }
+  pump(watermotor);
 
   // publish a message roughly every 10 seconds.
   if (millis() - lastMillis > 10000) {
@@ -161,43 +177,18 @@ void getDeviceStatus(char* payload) {  // 이 함수도 10초마다 갱신
   // Read temperature as Celsius (the default)
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
-  float soilmoisture = analogRead(A1);  // 습도센서 1번 연결
+  
+  float soilmoisture = analogRead(soilPin);  // 습도센서 1번 연결
   soilmoisture = map(soilmoisture,0,1023,100,0);
   soilmoisture = constrain(soilmoisture,0,100); // 값을 0부터 100사이의 값으로
-  float sunlight = analogRead(A3);    // 조도센서 3번 연결
+  
+  float sunlight = analogRead(sunlightPin);    // 조도센서 3번 연결
   sunlight = map(sunlight,0,1023,100,0);
   sunlight = constrain(sunlight,0,100);  // 값을 0부터 100사이의 값으로
 
-  //워터 모터가 ON 이면서 수분값이 30 이상이면 작동을 멈춤
-  if (strcmp(water_val,"ON")==0 && soilmoisture >= water_stand ) {
-      pump(false);
-      delay(10000);
-      water_val="OFF";
-  }
-  //워터 모터가 ON 이면서 수분값이 30 미만이면 작동을 계속함
-  else if (strcmp(water_val,"ON")==0 && soilmoisture < water_stand ) {
-      pump(true);
-      delay(10000);
-      water_val="ON";
-  }
-  //워터 모터가 OFF 이면서 수분값이 30 이상이면 작동을 멈춤
-  else if (strcmp(water_val,"OFF")==0 && soilmoisture >= water_stand ) {
-      pump(false);
-      delay(10000);
-      water_val="OFF";
-  }
-  //워터 모터가 OFF 이면서 수분값이 30 미만이면 작동을 시작함
-  else if (strcmp(water_val,"OFF")==0 && soilmoisture < water_stand ) {
-      pump(true);
-      delay(10000);
-      water_val="ON";
-  }
-  
+ 
   // make payload for the device update topic ($aws/things/MyMKRWiFi1010/shadow/update)
-  sprintf(payload,"{\"state\":{\"reported\":{\"temperature\":\"%f\",\"humidity\":\"%f\",\"soilmoisture\":\"%f\",\"sunlight\":\"%f\",\"watermotor\":\"%s\",\"sunvisor\":\"%s\"}}}",temperature,humidity,soilmoisture,sunlight,water_val,"CLOSE");
-
-
-
+  sprintf(payload,"{\"state\":{\"reported\":{\"temperature\":\"%f\",\"humidity\":\"%f\",\"soilMoisture\":\"%f\",\"sunlight\":\"%f\",\"watermotor\":\"%s\",\"sunvisor\":\"%s\"}}}",temperature,humidity,soilmoisture,sunlight,water_val,servo_val);
 }
 
 void sendMessage(char* payload) {
@@ -228,72 +219,56 @@ void onMessageReceived(int messageSize) {
   buffer[count]='\0'; // 버퍼의 마지막에 null 캐릭터 삽입
   Serial.println(buffer);
   Serial.println();
-
-  // JSon 형식의 문자열인 buffer를 파싱하여 필요한 값을 얻어옴.
-  // 디바이스가 구독한 토픽이 $aws/things/MyMKRWiFi1010/shadow/update/delta 이므로,
-  // JSon 문자열 형식은 다음과 같다.
-  // {
-  //    "version":391,
-  //    "timestamp":1572784097,
-  //    "state":{
-  //        "LED":"ON"
-  //    },
-  //    "metadata":{
-  //        "LED":{
-  //          "timestamp":15727840
-  //         }
-  //    }
-  // }
-  //
+  
   DynamicJsonDocument doc(1024);
   deserializeJson(doc, buffer);
   JsonObject root = doc.as<JsonObject>();
-  JsonObject state = root["state"];
-//  const char* water_val = state["watermoter"];
-//  const char* servo_val = state["sunvisor"];
-//  
-  char payload[512];
-  
-  if (strcmp(water_val,"ON")==0) {
-     delay(10000);
-     sprintf(payload,"{\"state\":{\"reported\":{\"watermotor\":\"%s\"}}}",water_val);
-     sendMessage(payload);
-    
-  } else if (strcmp(water_val,"OFF")==0) {
-      delay(10000);
-      sprintf(payload,"{\"state\":{\"reported\":{\"watermotor\":\"%s\"}}}",water_val);
-      sendMessage(payload);
-  }
+  JsonObject state = root["state"]; 
+  const char* servo_delta = state["sunvisor"];
 
-//   if (strcmp(servo_val,"OPEN")==0) {
-//      myservo.write(90);
-//      sprintf(payload,"{\"state\":{\"reported\":{\"sunvisor\":\"%s\"}}}",servo_val);
-//      sendMessage(payload);
-//    }
-//    else if (strcmp(servo_val,"HALFOPEN")==0) {
-//      myservo.write(45);
-//      sprintf(payload,"{\"state\":{\"reported\":{\"sunvisor\":\"%s\"}}}",servo_val);
-//      sendMessage(payload);
-//    }
-//    else if (strcmp(servo_val,"CLOSE")==0) {
-//      myservo.write(0);
-//      sprintf(payload,"{\"state\":{\"reported\":{\"sunvisor\":\"%s\"}}}",servo_val);
-//      sendMessage(payload);
-//    }
- 
+  char payload[512];
+    if (strcmp(servo_delta,"OPEN")==0) {
+      strcpy(servo_val, "OPEN");
+      sprintf(payload,"{\"state\":{\"reported\":{\"sunvisor\":\"%s\"}}}",servo_val);      
+      sendMessage(payload);    
+      servo(2);
+    }
+    else if (strcmp(servo_delta,"HALFOPEN")==0) {
+      strcpy(servo_val, "HALFOPEN");
+      sprintf(payload,"{\"state\":{\"reported\":{\"sunvisor\":\"%s\"}}}",servo_val);
+      sendMessage(payload);
+      servo(1);
+    }
+    else if (strcmp(servo_delta,"CLOSE")==0) {
+      strcpy(servo_val, "CLOSE");
+      sprintf(payload,"{\"state\":{\"reported\":{\"sunvisor\":\"%s\"}}}",servo_val);
+      sendMessage(payload);
+      servo(0);
+  }
 }
 
-void pump(int flag)  // 펌프 돌아가는 함수
-  {
-    boolean inPin1;
-    boolean inPin2;
-  
-    if(flag){
-      inPin1 = HIGH;
-      inPin2 = LOW;
-    }
-    else{
-      inPin1 = LOW;
-      inPin2 = LOW;
+void pump(bool flag)  // 펌프 돌아가는 함수
+{
+  if(flag){
+    digitalWrite(motor1Pin1, HIGH);
+    digitalWrite(motor1Pin2, LOW);
+    strcpy(water_val, "ON");
   }
+  else{
+    digitalWrite(motor1Pin1, LOW);
+    digitalWrite(motor1Pin2, LOW);
+    strcpy(water_val, "OFF");
   }
+}
+
+void servo(int state){
+  if(state == 0){
+    myservo.write(0);
+  }
+  else if(state == 1){
+    myservo.write(90);
+  }
+  else if(state == 2){
+    myservo.write(180);
+  }
+}
